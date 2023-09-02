@@ -17,6 +17,25 @@ resource "kubernetes_namespace" "zuul" {
     }
 }
 
+resource "kubernetes_service" "mysql" {
+    metadata {
+        name = "mysql"
+        labels = {
+            k8s-app = "mysql"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        selector = {
+            k8s-app = "mysql"
+        }
+        port {
+            port = 3306
+            name = "client"
+        }
+    }
+}
+
 resource "kubernetes_stateful_set" "mysql" {
     metadata {
         labels = {
@@ -152,6 +171,7 @@ resource "kubernetes_service" "zookeeper_hs" {
         labels = {
             k8s-app = "zookeeper"
         }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
     }
 
     spec {
@@ -176,6 +196,7 @@ resource "kubernetes_service" "zookeeper_cs" {
         labels = {
             k8s-app = "zookeeper"
         }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
     }
 
     spec {
@@ -189,9 +210,29 @@ resource "kubernetes_service" "zookeeper_cs" {
     }
 }
 
+resource "kubernetes_service" "zookeeper_cs_tls" {
+    metadata {
+        name = "zk-cs-tls"
+        labels = {
+            k8s-app = "zookeeper"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        selector = {
+            k8s-app = "zookeeper"
+        }
+        port {
+            port = "2281"
+            name = "client-tls"
+        }
+    }
+}
+
 resource "kubernetes_pod_disruption_budget_v1" "zookeeper_pdb" {
     metadata {
         name = "zk-pdb"
+        namespace = kubernetes_namespace.zuul.metadata[0].name
     }
     
     spec {
@@ -255,6 +296,42 @@ resource "kubernetes_stateful_set" "zookeeper" {
                         }
                     }
                 }
+                init_container {
+                    name = "keystore-set-up"
+                    image = "busybox:latest"
+                    command = [
+                        "sh",
+                        "-c",
+                        "cat /tls/client/tls.crt /tls/client/tls.key > /var/lib/zookeeper/zookeeper-client-tls.pem && chown 1000:1000 /var/lib/zookeeper/zookeeper-client-tls.pem"
+                    ]
+                    volume_mount {
+                        name = "datadir"
+                        mount_path = "/var/lib/zookeeper"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                }
+                init_container {
+                    name = "truststore-set-up"
+                    image = "busybox:latest"
+                    command = [
+                        "sh",
+                        "-c",
+                        "cp /tls/client/ca.crt /var/lib/zookeeper/ca.pem && chown 1000:1000 /var/lib/zookeeper/ca.pem"
+                    ]
+                    volume_mount {
+                        name = "datadir"
+                        mount_path = "/var/lib/zookeeper"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                }
                 container {
                     name = "kubernetes-zookeeper"
                     image_pull_policy = "Always"
@@ -271,6 +348,11 @@ resource "kubernetes_stateful_set" "zookeeper" {
                     }
 
                     port {
+                        container_port = 2281
+                        name = "client-tls"
+                    }
+
+                    port {
                         container_port = 2888
                         name = "server"
                     }
@@ -278,6 +360,11 @@ resource "kubernetes_stateful_set" "zookeeper" {
                     port {
                         container_port = 3888
                         name = "leader-election"
+                    }
+
+                    env {
+                        name = "ZOO_STANDALONE_ENABLED"
+                        value = "false"
                     }
 
                     env {
@@ -292,17 +379,47 @@ resource "kubernetes_stateful_set" "zookeeper" {
 
                     env {
                         name = "ZOO_CFG_EXTRA"
-                        value = "heap=512M logLevel=INFO"
+                        value = "heap=512M logLevel=INFO maxClientCnxns=60 secureClientPort=2281 ssl.keyStore.location=/var/lib/zookeeper/zookeeper-client-tls.pem ssl.trustStore.location=/var/lib/zookeeper/ca.pem ssl.hostnameVertification=false serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory"
+
+                    }
+
+                    env {
+                        name = "ZOO_MAX_CLIENT_CNXNS"
+                        value = "60"
                     }
 
                     volume_mount {
                         name        = "datadir"
                         mount_path  = "/var/lib/zookeeper"
                     }
+
+                    volume_mount {
+                        name        = "zookeeper-server-tls"
+                        mount_path  = "/tls/server"
+                        read_only   = "true"
+                    }
+
+                    volume_mount {
+                        name        = "zookeeper-client-tls"
+                        mount_path  = "/tls/client"
+                        read_only   = "true"
+                    }
                 }
                 security_context {
                     run_as_user = 1000
                     fs_group    = 1000
+                }
+                volume {
+                    name = "zookeeper-server-tls"
+                    secret {
+                        secret_name = "zookeeper-server-tls"
+                    }
+                }
+                volume {
+                    name = "zookeeper-client-tls"
+                    secret {
+                        secret_name = "zookeeper-client-tls"
+                    }
                 }
             }
         }
@@ -316,6 +433,579 @@ resource "kubernetes_stateful_set" "zookeeper" {
                 resources {
                     requests = {
                         storage = "10Gi"
+                    }
+                }
+            }
+        }
+    }
+}
+
+resource "kubernetes_service" "zuul_executor" {
+    metadata {
+        name = "zuul-executor"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-executor"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+
+    spec {
+        type        = "ClusterIP"
+        cluster_ip  = "None"
+        port {
+            name        = "logs"
+            port        = "7900"
+            protocol    = "TCP"
+            target_port = "logs"
+        }
+        selector = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-executor"
+        }
+    }
+}
+
+resource "kubernetes_service" "zuul_web" {
+    metadata {
+        name = "zuul-web"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-web"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        type = "NodePort"
+        port {
+            name        = "zuul-web"
+            port        = "9000"
+            protocol    = "TCP"
+            target_port = "zuul-web"
+        }
+        selector = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-web"
+        }
+    }
+}
+
+resource "kubernetes_service" "zuul_fingergw" {
+    metadata {
+        name = "zuul-fingergw"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-fingergw"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        type = "NodePort"
+        port {
+            name        = "zuul-fingergw"
+            port        = "9079"
+            protocol    = "TCP"
+            target_port = "zuul-web"
+        }
+        selector = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-fingergw"
+        }
+    }
+}
+
+
+resource "kubernetes_config_map" "zuul_config" {
+    metadata {
+        name = "zuul-config"
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    data = {
+        "zuul.conf" = "${file("${path.module}/zuul.conf")}"
+    }
+}
+
+resource "kubernetes_stateful_set" "zuul_scheduler" {
+    metadata {
+        name = "zuul-scheduler"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-scheduler"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        replicas = 1
+        service_name = "zuul-scheduler"
+        selector {
+            match_labels = {
+                k8s-app                         = "zuul"
+                "app.kubernetes.io/part-of"     = "zuul"
+                "app.kubernetes.io/component"   = "zuul-scheduler"
+            }
+        }
+        template {
+            metadata {
+                labels = {
+                    k8s-app                         = "zuul"
+                    "app.kubernetes.io/part-of"     = "zuul"
+                    "app.kubernetes.io/component"   = "zuul-scheduler"
+                }
+            }
+            spec {
+                container {
+                    name = "scheduler"
+                    image = "zuul/zuul-scheduler:latest"
+                    args = [
+                        "/usr/local/bin/zuul-scheduler",
+                        "-f",
+                        "-d"
+                    ]
+                    volume_mount {
+                        name = "zuul-config"
+                        mount_path = "/etc/zuul"
+                        read_only = "true"
+                    }
+                    volume_mount {
+                        name = "zuul-tenant-config"
+                        mount_path = "/etc/zuul/tenant"
+                        read_only = "true"
+                    }
+                    volume_mount {
+                        name = "zuul-scheduler"
+                        mount_path = "/var/lib/zuul"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                    env {
+                        name = "ZUUL_MYSQL_PASSWORD"
+                        value = "secret"
+                    }
+                    env {
+                        name = "ZUUL_MYSQL_USER"
+                        value = "zuul"
+                    }
+                }
+                volume {
+                    name = "zuul-config"
+                    config_map {
+                        name = kubernetes_config_map.zuul_config.metadata[0].name
+                        items {
+                            key = "zuul.conf"
+                            path = "zuul.conf"
+                        }
+                    }
+                }
+                volume {
+                    name = "zuul-tenant-config"
+                }
+                volume {
+                    name = "zookeeper-client-tls"
+                    secret {
+                        secret_name = "zookeeper-client-tls"
+                    }
+                }
+            }
+        }
+        volume_claim_template {
+            metadata {
+                name = "zuul-scheduler"
+            }
+
+            spec {
+                access_modes = [ "ReadWriteOnce" ]
+                resources {
+                    requests = {
+                        storage = "10Gi"
+                    }
+                }
+            }
+        }
+    }
+}
+
+resource "kubernetes_deployment" "zuul_web" {
+    metadata {
+        name = "zuul-web"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-web"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        replicas = "1"
+        selector {
+            match_labels = {
+                k8s-app                         = "zuul"
+                "app.kubernetes.io/part-of"     = "zuul"
+                "app.kubernetes.io/component"   = "zuul-web"
+            }
+        }
+        template {
+            metadata {
+                labels = {
+                    k8s-app                         = "zuul"
+                    "app.kubernetes.io/part-of"     = "zuul"
+                    "app.kubernetes.io/component"   = "zuul-web"
+                }
+            }
+            spec {
+                container {
+                    name = "web"
+                    image = "zuul/zuul-web:latest"
+                    port {
+                        name = "zuul-web"
+                        container_port = "9000"
+                    }
+                    volume_mount {
+                        name = "zuul-config"
+                        mount_path = "/etc/zuul"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                }
+                volume {
+                    name = "zuul-config"
+                    config_map {
+                        name = kubernetes_config_map.zuul_config.metadata[0].name
+                        items {
+                            key = "zuul.conf"
+                            path = "zuul.conf"
+                        }
+                    }
+                }
+                volume {
+                    name = "zookeeper-client-tls"
+                    secret {
+                        secret_name = "zookeeper-client-tls"
+                    }
+                }
+            }
+        }
+    }
+}
+
+resource "kubernetes_deployment" "zuul_fingergw" {
+    metadata {
+        name = "zuul-fingergw"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-fingergw"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        replicas = "1"
+        selector {
+            match_labels = {
+                k8s-app                         = "zuul"
+                "app.kubernetes.io/part-of"     = "zuul"
+                "app.kubernetes.io/component"   = "zuul-fingergw"
+            }
+        }
+        template {
+            metadata {
+                labels = {
+                    k8s-app                         = "zuul"
+                    "app.kubernetes.io/part-of"     = "zuul"
+                    "app.kubernetes.io/component"   = "zuul-fingergw"
+                }
+            }
+            spec {
+                container {
+                    name = "fingergw"
+                    image = "zuul/zuul-fingergw:latest"
+                    port {
+                        name = "zuul-fingergw"
+                        container_port = "9079"
+                    }
+                    volume_mount {
+                        name = "zuul-config"
+                        mount_path = "/etc/zuul"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                }
+                volume {
+                    name = "zuul-config"
+                    config_map {
+                        name = kubernetes_config_map.zuul_config.metadata[0].name
+                        items {
+                            key = "zuul.conf"
+                            path = "zuul.conf"
+                        }
+                    }
+                }
+                volume {
+                    name = "zookeeper-client-tls"
+                    secret {
+                        secret_name = "zookeeper-client-tls"
+                    }
+                }
+            }
+        }
+    }
+}
+
+resource "kubernetes_stateful_set" "zuul_executor" {
+    metadata {
+        name = "zuul-executor"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-executor"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        service_name = "zuul-executor"
+        replicas = "1"
+        pod_management_policy = "Parallel"
+        selector {
+            match_labels = {
+                k8s-app                         = "zuul"
+                "app.kubernetes.io/part-of"     = "zuul"
+                "app.kubernetes.io/component"   = "zuul-executor"
+            }
+        }
+        template {
+            metadata {
+                labels = {
+                    k8s-app                         = "zuul"
+                    "app.kubernetes.io/part-of"     = "zuul"
+                    "app.kubernetes.io/component"   = "zuul-executor"
+                }
+            }
+            spec {
+                security_context {
+                    run_as_user = "10001"
+                    run_as_group = "10001"
+                }
+                container {
+                    name = "executor"
+                    image = "zuul/zuul-executor:latest"
+                    args = [
+                        "/usr/local/bin/zuul-executor",
+                        "-f",
+                        "-d"
+                    ]
+                    port {
+                        name = "logs"
+                        container_port = "7900"
+                    }
+                    env {
+                        name = "ZUUL_EXECUTOR_SIGTERM_GRACEFUL"
+                        value = "1"
+                    }
+                    volume_mount {
+                        name = "zuul-config"
+                        mount_path = "/etc/zuul"
+                    }
+                    volume_mount {
+                        name = "zuul-var"
+                        mount_path = "/var/lib/zuul"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                    security_context {
+                        privileged = "true"
+                    }
+                }
+                termination_grace_period_seconds = 300
+                volume {
+                    name = "zuul-var"
+                    empty_dir {}
+                }
+                volume {
+                    name = "zuul-config"
+                    config_map {
+                        name = kubernetes_config_map.zuul_config.metadata[0].name
+                        items {
+                            key = "zuul.conf"
+                            path = "zuul.conf"
+                        }
+                    }
+                }
+                volume {
+                    name = "zookeeper-client-tls"
+                    secret {
+                        secret_name = "zookeeper-client-tls"
+                    }
+                }
+            }
+        }
+    }
+}
+
+resource "kubernetes_stateful_set" "zuul_merger" {
+    metadata {
+        name = "zuul-merger"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-merger"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        service_name = "zuul-merger"
+        replicas = 1
+        pod_management_policy = "Parallel"
+        selector {
+            match_labels = {
+                k8s-app                         = "zuul"
+                "app.kubernetes.io/part-of"     = "zuul"
+                "app.kubernetes.io/component"   = "zuul-merger"
+            }
+        }
+        template {
+            metadata {
+                labels = {
+                    k8s-app                         = "zuul"
+                    "app.kubernetes.io/part-of"     = "zuul"
+                    "app.kubernetes.io/component"   = "zuul-merger"
+                }
+            }
+            spec {
+                security_context {
+                    run_as_user     = "10001"
+                    run_as_group    = "10001"
+                }
+                container {
+                    name = "merger"
+                    image = "zuul/zuul-merger:latest"
+                    args = [
+                        "/usr/local/bin/zuul-merger",
+                        "-f",
+                        "-d"
+                    ]
+                    volume_mount {
+                        name = "zuul-config"
+                        mount_path = "/etc/zuul"
+                    }
+                    volume_mount {
+                        name = "zuul-var"
+                        mount_path = "/var/lib/zuul"
+                    }
+                    volume_mount {
+                        name = "zookeeper-client-tls"
+                        mount_path = "/tls/client"
+                        read_only = "true"
+                    }
+                }
+                termination_grace_period_seconds = 3600
+                volume {
+                    name = "zuul-var"
+                    empty_dir {}
+                }
+                volume {
+                    name = "zuul-config"
+                    config_map {
+                        name = kubernetes_config_map.zuul_config.metadata[0].name
+                        items {
+                            key = "zuul.conf"
+                            path = "zuul.conf"
+                        }
+                    }
+                }
+                volume {
+                    name = "zookeeper-client-tls"
+                    secret {
+                        secret_name = "zookeeper-client-tls"
+                    }
+                }
+            }
+            
+        }
+    }
+}
+
+resource "kubernetes_service" "zuul_preview" {
+    metadata {
+        name = "zuul-preview"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-preview"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        type = "NodePort"
+        port {
+            name = "zuul-preview"
+            port = "80"
+            protocol = "TCP"
+            target_port = "zuul-preview"
+        }
+        selector = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-preview"
+        }
+    }
+}
+
+resource "kubernetes_deployment" "zuul_preview" {
+    metadata {
+        name = "zuul-preview"
+        labels = {
+            k8s-app                         = "zuul"
+            "app.kubernetes.io/part-of"     = "zuul"
+            "app.kubernetes.io/component"   = "zuul-preview"
+        }
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    spec {
+        replicas = 1
+        selector {
+            match_labels = {
+                k8s-app                         = "zuul"
+                "app.kubernetes.io/part-of"     = "zuul"
+                "app.kubernetes.io/component"   = "zuul-preview"
+            }
+        }
+        template {
+            metadata {
+                labels = {
+                    k8s-app                         = "zuul"
+                    "app.kubernetes.io/part-of"     = "zuul"
+                    "app.kubernetes.io/component"   = "zuul-preview"
+                }
+            }
+            spec {
+                container {
+                    name = "preview"
+                    image = "zuul/zuul-preview:latest"
+                    port {
+                        name = "zuul-preview"
+                        container_port = "80"
+                    }
+                    env {
+                        name = "ZUUL_API_URL"
+                        value = "http://zuul-web/"
                     }
                 }
             }
