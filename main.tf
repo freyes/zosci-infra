@@ -17,6 +17,16 @@ resource "kubernetes_namespace" "zuul" {
     }
 }
 
+resource "kubernetes_secret" "tenant_config" {
+    metadata {
+        name = "zuul-tenant-config"
+        namespace = kubernetes_namespace.zuul.metadata[0].name
+    }
+    data = {
+        "main.yaml" = "${file("${path.module}/tenant-config.yaml")}"
+    }
+}
+
 resource "kubernetes_service" "mysql" {
     metadata {
         name = "mysql"
@@ -608,6 +618,9 @@ resource "kubernetes_stateful_set" "zuul_scheduler" {
                 }
                 volume {
                     name = "zuul-tenant-config"
+                    secret {
+                        secret_name = "zuul-tenant-config"
+                    }
                 }
                 volume {
                     name = "zookeeper-client-tls"
