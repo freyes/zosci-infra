@@ -572,7 +572,7 @@ resource "kubernetes_stateful_set" "zuul_scheduler" {
             spec {
                 container {
                     name = "scheduler"
-                    image = "zuul/zuul-scheduler:latest"
+                    image = "quay.io/zuul-ci/zuul-scheduler:9.1"
                     args = [
                         "/usr/local/bin/zuul-scheduler",
                         "-f",
@@ -677,7 +677,7 @@ resource "kubernetes_deployment" "zuul_web" {
             spec {
                 container {
                     name = "web"
-                    image = "zuul/zuul-web:latest"
+                    image = "quay.io/zuul-ci/zuul-web:9.1"
                     port {
                         name = "zuul-web"
                         container_port = "9000"
@@ -743,7 +743,7 @@ resource "kubernetes_deployment" "zuul_fingergw" {
             spec {
                 container {
                     name = "fingergw"
-                    image = "zuul/zuul-fingergw:latest"
+                    image = "quay.io/zuul-ci/zuul-fingergw:9.1"
                     port {
                         name = "zuul-fingergw"
                         container_port = "9079"
@@ -815,7 +815,7 @@ resource "kubernetes_stateful_set" "zuul_executor" {
                 }
                 container {
                     name = "executor"
-                    image = "zuul/zuul-executor:latest"
+                    image = "quay.io/zuul-ci/zuul-executor:9.1"
                     args = [
                         "/usr/local/bin/zuul-executor",
                         "-f",
@@ -908,7 +908,7 @@ resource "kubernetes_stateful_set" "zuul_merger" {
                 }
                 container {
                     name = "merger"
-                    image = "zuul/zuul-merger:latest"
+                    image = "quay.io/zuul-ci/zuul-merger:9.1"
                     args = [
                         "/usr/local/bin/zuul-merger",
                         "-f",
@@ -1011,7 +1011,7 @@ resource "kubernetes_deployment" "zuul_preview" {
             spec {
                 container {
                     name = "preview"
-                    image = "zuul/zuul-preview:latest"
+                    image = "quay.io/zuul-ci/zuul-preview:latest"
                     port {
                         name = "zuul-preview"
                         container_port = "80"
