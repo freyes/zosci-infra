@@ -8,7 +8,7 @@ terraform {
 }
 
 provider "kubernetes" {
-    config_path = "~/.kube/config"
+    config_path = var.kubeconfig
 }
 
 resource "kubernetes_namespace" "zuul" {
@@ -163,7 +163,7 @@ resource "kubernetes_stateful_set" "mysql" {
 
             spec {
                 access_modes = ["ReadWriteOnce"]
-                storage_class_name = "microk8s-hostpath"
+                storage_class_name = var.storage_class_name
 
                 resources {
                     requests = {
@@ -440,6 +440,7 @@ resource "kubernetes_stateful_set" "zookeeper" {
 
             spec {
                 access_modes = ["ReadWriteOnce"]
+                storage_class_name = var.storage_class_name
                 resources {
                     requests = {
                         storage = "10Gi"
@@ -637,6 +638,7 @@ resource "kubernetes_stateful_set" "zuul_scheduler" {
 
             spec {
                 access_modes = [ "ReadWriteOnce" ]
+                storage_class_name = var.storage_class_name
                 resources {
                     requests = {
                         storage = "10Gi"
@@ -1068,3 +1070,4 @@ output "load_balancer_hostname" {
 output "load_balancer_ip" {
     value = kubernetes_ingress_v1.zuul_web_ingress.status.0.load_balancer.0.ingress.0.ip
 }
+
